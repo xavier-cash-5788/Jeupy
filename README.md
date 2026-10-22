@@ -1,56 +1,57 @@
-# IsoEngine — moteur 2D isométrique style Zelda SNES (100 % Python)
+# IsoEngine — map ASCII procédurale + zones fonctionnelles
 
-Moteur de jeu + scène de démo : vue isométrique diamant 2:1, génération
-procedurale de carte (île, plage, chemin, ponts), héros qui se déplace par
-rapport à l'écran (comme sur SNES), combat à l'épée, ennemis (slimes qui
-poursuivent, chauves-souris volantes), tri de profondeur painter's-order,
-caméra fluide avec zoom, HUD cœurs façon Zelda.
+## Génération procédurale en ASCII
+Le monde est d'abord généré sous forme de **grille de caractères lisible**
+(`engine/ascii_map.py`), puis converti en tuiles isométriques.
 
-Aucun asset externe : tous les sprites sont dessinés procéduralement
-(remplaçables plus tard par des spritesheets).
+Chaque caractère = une tuile au sol, et certains caractères posent un décor :
+
+| sol  | `. herbe , chemin : sable ~ eau = pont # roche f forêt " herbe haute * fleur c/i/g/d minerais cuivre/fer/or/diamant r gravier w/C/p/b cultures (blé/carotte/pomme de terre/betterave) o pavé m mousse D deepslate L tronc % feuilles P planches S pierre |
+| décor| `T arbre R rocher B buisson ! souche ? bloc énorme |
+
+- Touche **M** en jeu : sauvegarde la carte générée dans `maps/carte_<seed>.txt`.
+- On peut rejouer un fichier ASCII édité à la main :
+  `TileMap(ascii_source="maps/carte_42.txt")`.
+
+## Zones fonctionnelles (une carte 96×96 par défaut)
+| Zone | Rôle | Contenu |
+|---|---|---|
+| Village depart (spawn) | zone sûre, point d'apparition | **0 ennemi**, chemins, fleurs |
+| Ferme (farm) | farm style Minecraft | parcelles blé/carotte/pomme de terre/betterave, buissons fruitiers **qui repoussent** |
+| Mine (mine) | minage | carrière rocheuse, minerais cuivre→diamant **minables avec la pioche** |
+| Ruines (loot) | loot | **coffres** (pièces, fer, or, diamant), ruines pavées |
+| Arène (combat) | combat | clairière entourée de rochers, **zone dense en ennemis** |
+| Forêt (bucraft) | construction | arbres à couper (bois), place pavée, craft facon Minecraft |
+| Sauvage (wild) | exploration | quelques ennemis errants |
+
+## Tu n'es plus attaqué trop vite
+- **Aucun ennemi** au village ni à la ferme ; spawn toujours au village.
+- Chaque ennemi a un **court rayon d'aggro** (~3 tuiles) et un **rayon de
+  gardiennage** (leash) autour de son point d'apparition : il ne te poursuit
+  jamais hors de sa zone et y retourne.
+- Les ennems sont **peuplés par zone** : denses seulement dans l'arène.
+- **I-frames** de 1 s après un coup + régénération lente quand aucun ennemi
+  n'est proche (< 10 tuiles).
+
+## Commandes
+- `ZQSD` / flèches : déplacement (isométrique)
+- `ESPACE` : attaque à l'épée (avec la souris pour orienter le coup)
+- `E` maintenu : outil — récolte (farm), minage (mine), ouverture des coffres (loot), coupe de bois (bucraft). Barre de progression affichée.
+- `C` : craft rapide (1 bois → 1 planche ; planches → table/pieu)
+- `M` : sauvegarder la carte ASCII dans `maps/`
+- `R` : nouvelle carte procédurale (nouvelle graine)
 
 ## Lancer
-
 ```bash
-pip install -r requirements.txt
-python main.py                 # fenêtre 1024x640
-python main.py --seed 42       # carte reproductible
-python main.py --size 1280x720
+python main.py            # graine aléatoire
+python main.py --seed 42  # carte reproductible
 ```
 
-## Contrôles
-
-| Touche            | Action                                        |
-|-------------------|-----------------------------------------------|
-| ZQSD / WASD / flèches | Déplacement (relatif à l'écran, style Zelda) |
-| ESPACE            | Coup d'épée                                   |
-| +/-               | Zoom caméra                                   |
-| R                 | Générer une nouvelle carte                    |
-| H                 | Afficher/cacher l'aide                        |
-| ESC               | Quitter                                       |
-
-## Architecture (`engine/`)
-
-- `iso.py` — projection dimétrique 2:1 : `world_to_screen`, `screen_to_world`,
-  conversion angle-écran → direction monde.
-- `camera.py` — caméra isométrique : suivi lissé, clamp aux bornes de carte,
-  zoom, culling (`view_rect`).
-- `tilemap.py` — carte de tuiles générée par bruit de valeur interpolé
-  (herbe/chemin/eau/sable/rocher/pont) + props (arbres, rochers, buissons,
-  fleurs), rendu des losanges au sol avec reflets d'eau animés.
-- `entity.py` — classes `Entity` (déplacement + collisions axiales avec
-  glissement), `Hero` (attaque en arc, hitbox monde), `Slime`, `Bat`,
-  et rendu procédural des props.
-- `scene.py` — boucle principale `Game` (60 FPS, événements) et interface
-  `Scene` (enter/exit/handle_event/update/draw).
-
-Le jeu lui-même est dans `game/demo_scene.py` (monde, IA, combat, particules,
-HUD) : il n'utilise **que** l'API du moteur, exactement comme un futur vrai
-jeu l'utiliserait.
-
-## Étapes suivantes possibles
-
-1. Spritesheets pixel-art (charger des PNG à la place des primitives).
-2. Éditeur de carte (clic souris → `screen_to_world` est déjà prêt).
-3. Donjons / plusieurs scènes, PNJ, objets à ramasser.
-4. Sons & musique (pygame.mixer).
+## Structure
+```
+engine/ascii_map.py   génération + parsing des cartes ASCII, types de tuiles
+engine/tilemap.py     TileMap (ASCII -> tuiles iso), Zones, layout des régions
+engine/entity.py      héros (épée + pioche), slime, chauve-souris, ressources (coffre/fruit/crop)
+game/world.py         peuplement par zone, inventaire, minage/récolte/loot/craft, équilibrage
+game/demo_scene.py    scène pygame : rendu isométrique, HUD, mini-carte ASCII
+```

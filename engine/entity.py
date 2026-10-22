@@ -28,8 +28,11 @@ class Entity:
         self.moving = False
         self.radius = 0.28          # rayon de collision en tuiles
         self.hp = 3
+        self.max_hp = 3
         self.dead = False
         self.hit_flash = 0.0
+        self.home = (x, y)          # point d'attache (gardiennage de zone)
+        self.leash = 0.0            # rayon de gardiennage autour du home
 
     # ------------------------------------------------------------ movement
     def set_velocity(self, wvx: float, wvy: float):
@@ -85,6 +88,9 @@ class Hero(Entity):
         self.attacking = False
         self.attack_t = 0.0
         self.attack_dir = 0.0  # angle ecran de l'attaque
+        self.gathering = False
+        self.gather_t = 0.0
+        self.gather_target = None
 
     def start_attack(self, angle_screen: float):
         if not self.attacking:
@@ -107,6 +113,10 @@ class Hero(Entity):
             self.attack_t += dt
             if self.attack_t > 0.35:
                 self.attacking = False
+        if self.gathering:
+            self.gather_t += dt
+        else:
+            self.gather_t = 0.0
 
     def draw(self, surf: pygame.Surface, cam):
         px, py = cam.world_to_view(self.x, self.y)
@@ -164,16 +174,29 @@ class Hero(Entity):
                 s = max(1, int((4 - i) * z))
                 pygame.draw.circle(surf, (255, 255, 200), (int(tx), int(ty)), s)
 
+        # Pioche : outil qui tape pendant la recolte / le minage.
+        if self.gathering:
+            swing = math.sin(self.gather_t * 18)
+            cx, cy = px + 9 * z, py - 15 * z
+            hx = cx + 10 * z * (0.4 + 0.6 * swing)
+            hy = cy + 8 * z * swing
+            pygame.draw.line(surf, (120, 85, 50), (cx, cy), (hx, hy), max(1, int(2.5 * z)))
+            pygame.draw.line(surf, (170, 170, 180), (hx - 5 * z, hy), (hx + 5 * z, hy - 3 * z), max(1, int(2 * z)))
+
 
 class Slime(Entity):
     """Ennemi simple : erre, poursuit le heros s'il est proche."""
 
-    def __init__(self, x: float, y: float, rng=None):
+    def __init__(self, x: float, y: float, rng=None, aggro: float = 6.0,
+                 leash: float = 12.0, speed: float = 1.8, hp: int = 2):
         import random
         super().__init__(x, y)
         self.rng = rng or random.Random()
-        self.speed = 1.8
-        self.hp = 2
+        self.speed = speed
+        self.hp = hp
+        self.max_hp = hp
+        self.aggro = aggro
+        self.leash = leash
         self.wander_t = 0.0
         self.dir = self.rng.uniform(0, math.tau)
 
@@ -181,13 +204,18 @@ class Slime(Entity):
         hero = world.hero
         dx, dy = hero.x - self.x, hero.y - self.y
         dist = math.hypot(dx, dy)
-        if 0.05 < dist < 6 and not hero.dead:
+        dh = math.hypot(hero.x - self.home[0], hero.y - self.home[1])
+        chasing = 0.05 < dist < self.aggro and dh < self.leash and not hero.dead
+        if chasing:
             self.set_velocity(dx / dist, dy / dist)
         else:
             self.wander_t -= dt
             if self.wander_t <= 0:
                 self.wander_t = self.rng.uniform(1.0, 2.5)
                 self.dir = self.rng.uniform(0, math.tau)
+            if self.leash and math.hypot(self.x - self.home[0], self.y - self.home[1]) > self.leash * 0.7:
+                hx, hy = self.home
+                self.dir = math.atan2(hy - self.y, hx - self.x) + self.rng.uniform(-0.6, 0.6)
             self.set_velocity(math.cos(self.dir), math.sin(self.dir))
         if not self.try_move(dt, world.map.is_walkable):
             self.dir = self.rng.uniform(0, math.tau)
@@ -211,12 +239,16 @@ class Slime(Entity):
 class Bat(Entity):
     """Ennemi volant : se deplace en ligne droite, ignore le sol, ondule."""
 
-    def __init__(self, x: float, y: float, rng=None):
+    def __init__(self, x: float, y: float, rng=None, aggro: float = 8.0,
+                 leash: float = 14.0, speed: float = 3.2, hp: int = 1):
         import random
         super().__init__(x, y)
         self.rng = rng or random.Random()
-        self.speed = 3.2
-        self.hp = 1
+        self.speed = speed
+        self.hp = hp
+        self.max_hp = hp
+        self.aggro = aggro
+        self.leash = leash
         self.fly_h = 34
         self.phase = self.rng.uniform(0, math.tau)
         self.dir = self.rng.uniform(0, math.tau)
@@ -228,8 +260,12 @@ class Bat(Entity):
         hero = world.hero
         dx, dy = hero.x - self.x, hero.y - self.y
         dist = math.hypot(dx, dy)
-        if 0.05 < dist < 8:
+        dh = math.hypot(hero.x - self.home[0], hero.y - self.home[1])
+        if 0.05 < dist < self.aggro and dh < self.leash and not hero.dead:
             self.dir = math.atan2(dy, dx)
+        elif self.leash and math.hypot(self.x - self.home[0], self.y - self.home[1]) > self.leash:
+            hx, hy = self.home
+            self.dir = math.atan2(hy - self.y, hx - self.x)
         self.set_velocity(math.cos(self.dir), math.sin(self.dir))
         # Les chauves-souris passent partout sauf hors carte.
         self.x += self.vx * dt
@@ -246,6 +282,66 @@ class Bat(Entity):
         pygame.draw.line(surf, col, (px + 12 * z, py - flap), (px, py), max(1, int(2.5 * z)))
         pygame.draw.circle(surf, col, (int(px), int(py)), max(1, int(4 * z)))
         pygame.draw.circle(surf, (255, 80, 80), (int(px), int(py - 1 * z)), max(1, int(1.2 * z)))
+
+
+
+class ResourceNode:
+    """Ressource cueillable : coffre de loot, buisson fruitier, plant mur."""
+
+    def __init__(self, kind: str, x: float, y: float, loot=None):
+        self.kind = kind          # "chest" | "fruit" | "crop"
+        self.x = x
+        self.y = y
+        self.loot = loot or []
+        self.used = False
+        self.respawn = -1.0       # temps restant avant repousse (-1 = infini)
+
+    @property
+    def depth(self):
+        return self.x + self.y
+
+    def update(self, dt):
+        if self.respawn >= 0:
+            self.respawn -= dt
+            if self.respawn <= 0:
+                self.respawn = -1.0
+                self.used = False
+
+    def harvest(self, world, rng):
+        if self.used:
+            return None
+        self.used = True
+        if self.kind == "chest":
+            self.respawn = -1
+        elif self.kind == "fruit":
+            self.respawn = 45.0
+        else:  # crop : repousse facon Minecraft
+            self.respawn = 60.0
+        return self.loot
+
+    def draw(self, surf, cam):
+        px, py = cam.world_to_view(self.x, self.y)
+        z = cam.zoom
+        if self.kind == "chest":
+            w, h = int(18 * z), int(12 * z)
+            col = (150, 100, 45) if not self.used else (90, 70, 45)
+            pygame.draw.rect(surf, col, (px - w // 2, py - h, w, h), border_radius=2)
+            pygame.draw.rect(surf, (200, 170, 60), (px - 2 * z, py - h + 2 * z, 4 * z, h - 4 * z))
+            if not self.used:
+                glow = abs(math.sin(pygame.time.get_ticks() / 300)) * 0.6 + 0.4
+                pygame.draw.circle(surf, (255, 230, 120), (int(px), int(py - h - 4 * z)), max(1, int(2 * z * glow)))
+        elif self.kind == "fruit":
+            r = int(8 * z)
+            pygame.draw.circle(surf, (55, 125, 55), (int(px), int(py - r // 2)), r)
+            if not self.used:
+                for i in range(3):
+                    fx = px + int(math.cos(i * 2.1) * r * 0.5)
+                    fy = py - r // 2 + int(math.sin(i * 2.1) * r * 0.4)
+                    pygame.draw.circle(surf, (220, 70, 70), (fx, fy), max(1, int(2.5 * z)))
+        else:  # crop mure
+            col = (230, 200, 110) if not self.used else (150, 130, 80)
+            for i in (-1, 0, 1):
+                pygame.draw.line(surf, col, (px + i * 4 * z, py), (px + i * 4 * z, py - 9 * z), max(1, int(z)))
 
 
 def draw_prop(surf: pygame.Surface, cam, prop: dict):
@@ -278,3 +374,12 @@ def draw_prop(surf: pygame.Surface, cam, prop: dict):
         c = [(240, 240, 240), (240, 200, 90), (230, 120, 160)][prop.get("seed", 0) % 3]
         pygame.draw.line(surf, (60, 120, 50), (px, py), (px, py - 6 * z), max(1, int(z)))
         pygame.draw.circle(surf, c, (int(px), int(py - 7 * z)), max(1, int(2.5 * z)))
+    elif kind == "ore_pile":
+        cols = {0: (200, 130, 80), 1: (210, 210, 215), 2: (240, 210, 90), 3: (110, 230, 220)}
+        variant = prop.get("variant", 0)
+        s_ = int(8 * z)
+        base = (110, 110, 120)
+        offs = [(0, 0), (-s_ // 2, -s_ // 3), (s_ // 2, -s_ // 3), (0, -s_)]
+        for ox, oy in offs:
+            pygame.draw.rect(surf, base, (px + ox - s_ // 2, py + oy - s_, s_, s_))
+            pygame.draw.rect(surf, cols.get(variant, base), (px + ox - s_ // 4, py + oy - s_ * 0.75, s_ // 2, s_ // 2))

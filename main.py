@@ -1,31 +1,30 @@
-#!/usr/bin/env python3
-"""Point d'entree : lance la demo du moteur isometrique.
+"""Point d'entree du jeu.
 
-Usage :
-    python main.py [--seed 1234] [--size 1280x720]
+Lance la scene principale : monde isometrique genere a partir d'une carte
+ASCII procedurale, decoupee en zones (village, ferme, mine, ruines/loot,
+arene de combat, foret bucraft).
+
+    python main.py            # graine aleatoire
+    python main.py --seed 42  # meme carte a chaque fois
 """
 
-from __future__ import annotations
-
-import argparse
+import sys
 
 from engine.scene import Game
 from game.demo_scene import DemoScene
 
 
-def parse_size(s: str) -> tuple[int, int]:
-    w, _, h = s.partition("x")
-    return int(w), int(h)
+def parse_seed(argv):
+    for i, a in enumerate(argv):
+        if a == "--seed" and i + 1 < len(argv):
+            return int(argv[i + 1])
+    return None
 
 
 def main():
-    ap = argparse.ArgumentParser(description="IsoEngine - demo 2D isometrique style Zelda SNES")
-    ap.add_argument("--seed", type=int, default=None, help="graine de generation de carte")
-    ap.add_argument("--size", type=str, default="1024x640", help="resolution fenetre, ex: 1280x720")
-    args = ap.parse_args()
-
-    game = Game(title="IsoEngine - Aventure Isometrique (style Zelda SNES)", size=parse_size(args.size))
-    game.change_scene(DemoScene, seed=args.seed)
+    seed = parse_seed(sys.argv[1:])
+    game = Game(title="IsoEngine - map ASCII procedurale + zones", size=(1024, 640))
+    game.change_scene(DemoScene, seed=seed)
     game.run()
 
 

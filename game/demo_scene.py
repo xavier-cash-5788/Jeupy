@@ -1,212 +1,216 @@
-"""Scene de demo : monde isometrique avec heros, ennemis, combat d'epee."""
+"""Scene principale : monde ASCII procedural + zones (farm/mine/loot/combat/bucraft).
+
+Commandes :
+  ZQSD / fleches   deplacement
+  ESPACE           attaque a l'epee (zone combat)
+  E (maintenu)     outil : farm (recolte), mine (minage), loot (coffres), bucraft (bois)
+  C                craft rapide facon Minecraft (1 bois -> 1 planche)
+  M                sauvegarde la carte generee en ASCII (maps/carte_<seed>.txt)
+  R                nouvelle carte (nouvelle graine)
+"""
 
 from __future__ import annotations
 
 import math
-import random
+import os
 
 import pygame
 
-from engine.camera import Camera
-from engine.entity import Hero, Slime, Bat, draw_prop
-from engine.iso import TILE_W, TILE_H, move_angle_to_world
 from engine.scene import Scene
-from engine.tilemap import TileMap
-
-
-class World:
-    def __init__(self, seed=None):
-        self.map = TileMap(48, 48, seed=seed)
-        # Trouver un spawn praticable pres du centre.
-        sx, sy = self._find_spawn()
-        self.hero = Hero(sx, sy)
-        self.enemies: list = []
-        self.particles: list[dict] = []
-        self.rng = random.Random(seed or 1)
-        for _ in range(14):
-            ex, ey = self._find_spawn(margin=6)
-            cls = Bat if self.rng.random() < 0.3 else Slime
-            self.enemies.append(cls(ex, ey, self.rng))
-        self.score = 0
-        self.hero.max_hp = 6
-
-    def _find_spawn(self, margin: int = 3):
-        cx, cy = self.map.w // 2, self.map.h // 2
-        for r in range(0, max(self.map.w, self.map.h)):
-            for dy in range(-r, r + 1, max(1, r)):
-                for dx in range(-r, r + 1, max(1, r)):
-                    x, y = cx + dx, cy + dy
-                    if self.map.is_walkable(x + 0.5, y + 0.5) and not self._prop_at(x, y):
-                        return x + 0.5, y + 0.5
-        return cx + 0.5, cy + 0.5
-
-    def _prop_at(self, tx, ty):
-        return any(int(p["x"]) == tx and int(p["y"]) == ty for p in self.map.props)
-
-    def spawn_particles(self, wx, wy, color, n=8):
-        for _ in range(n):
-            a = self.rng.uniform(0, math.tau)
-            s = self.rng.uniform(20, 70)
-            self.particles.append({
-                "x": wx, "y": wy, "z": self.rng.uniform(5, 30),
-                "vz": self.rng.uniform(40, 90),
-                "vx": math.cos(a) * s * 0.02, "vy": math.sin(a) * s * 0.02,
-                "life": self.rng.uniform(0.3, 0.6), "color": color,
-            })
-
-    def update(self, dt):
-        self.hero.update(dt, self)
-        # Frappe du heros -> degats aux ennemis.
-        hb = self.hero.attack_hitbox_world
-        if hb:
-            hx, hy, hr = hb
-            for en in self.enemies:
-                if en.dead or en.hit_flash > 0:
-                    continue
-                if math.hypot(en.x - hx, en.y - hy) < hr + en.radius:
-                    en.hp -= 1
-                    en.hit_flash = 0.25
-                    kb = 0.6
-                    nx, ny = (en.x - self.hero.x), (en.y - self.hero.y)
-                    n = math.hypot(nx, ny) or 1
-                    en.x += nx / n * kb
-                    en.y += ny / n * kb
-                    if en.hp <= 0:
-                        en.dead = True
-                        self.score += 1
-                        self.spawn_particles(en.x, en.y, (120, 220, 120), 12)
-
-        for en in self.enemies:
-            if en.dead:
-                continue
-            en.hit_flash = max(0.0, en.hit_flash - dt)
-            en.update(dt, self)
-            # Contact avec le heros -> degats + knockback.
-            d = math.hypot(en.x - self.hero.x, en.y - self.hero.y)
-            if d < en.radius + self.hero.radius and self.hero.hit_flash <= 0:
-                self.hero.hp -= 1
-                self.hero.hit_flash = 0.8
-                ux, uy = (self.hero.x - en.x) / (d or 1), (self.hero.y - en.y) / (d or 1)
-                self.hero.x += ux * 0.5
-                self.hero.y += uy * 0.5
-                if self.hero.hp <= 0:
-                    self.hero.dead = True
-        self.hero.hit_flash = max(0.0, self.hero.hit_flash - dt)
-        self.enemies = [e for e in self.enemies if not e.dead]
-
-        for p in self.particles:
-            p["life"] -= dt
-            p["z"] += p["vz"] * dt
-            p["vz"] -= 160 * dt
-            p["x"] += p["vx"] * dt
-            p["y"] += p["vy"] * dt
-        self.particles = [p for p in self.particles if p["life"] > 0]
+from engine.camera import Camera
+from engine.entity import draw_prop
+from engine.iso import world_to_screen, screen_to_world
+from game.world import World
 
 
 class DemoScene(Scene):
-    def __init__(self, game, seed=None):
+    name = "demo"
+
+    def __init__(self, game=None, seed=None):
         super().__init__(game)
         self.world = World(seed=seed)
-        self.cam = Camera(game.screen.get_size())
-        self.cam.set_bounds(self.world.map.w, self.world.map.h)
-        self.cam.cx, self.cam.cy = self.world.hero.x, self.world.hero.y
-        self.last_dir_screen = math.pi / 2  # vers le bas de l'ecran
-        self.show_help = True
+        size = game.screen.get_size() if game is not None else (1024, 640)
+        self.camera = Camera(size)
+        self.camera.set_bounds(self.world.map.w, self.world.map.h)
+        self.camera.cx, self.camera.cy = self.world.hero.x, self.world.hero.y
+        self.camera.zoom = 0.75
+        self.font = game.font if game is not None else None
+        self.bigfont = None
+        self._attack_consumed = False
+        self.hint = "Zone tranquille : explore ! Les ennemis restent dans leur zone."
 
+    def enter(self):
+        pygame.display.set_caption("IsoEngine - map ASCII procedurale + zones")
+        if self.font is None:
+            self.font = pygame.font.SysFont("monospace", 16, bold=True)
+        if self.bigfont is None:
+            self.bigfont = pygame.font.SysFont("monospace", 20, bold=True)
+
+    # ------------------------------------------------------------------ input
     def handle_event(self, e):
         if e.type == pygame.KEYDOWN:
-            if e.key == pygame.K_SPACE:
-                self.world.hero.start_attack(self.last_dir_screen)
-            elif e.key == pygame.K_h:
-                self.show_help = not self.show_help
-            elif e.key == pygame.K_r:
-                self.game.change_scene(DemoScene, seed=random.randint(0, 99999))
-            elif e.key in (pygame.K_PLUS, pygame.K_EQUALS):
-                self.cam.zoom = min(2.0, self.cam.zoom * 1.15)
-            elif e.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-                self.cam.zoom = max(0.5, self.cam.zoom / 1.15)
+            if e.key == pygame.K_r:
+                self.game.change_scene(DemoScene, seed=None)
+            elif e.key == pygame.K_m:
+                os.makedirs("maps", exist_ok=True)
+                path = f"maps/carte_{self.world.seed}.txt"
+                self.world.map.save_ascii(path)
+                self.hint = f"Carte ASCII sauvegardee : {path}"
+            elif e.key == pygame.K_c:
+                if self.world.craft("planche"):
+                    self.hint = "Bucraft : 1 bois -> 1 planche !"
+                else:
+                    self.hint = "Il te faut au moins 1 bois (foret bucraft)."
 
-    def _input_direction(self) -> tuple[float, float]:
+    def _hero_input(self):
         keys = pygame.key.get_pressed()
-        ex = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
-        ey = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - (keys[pygame.K_UP] or keys[pygame.K_w])
-        if ex == 0 and ey == 0:
-            return 0.0, 0.0
-        angle = math.atan2(ey, ex)
-        self.last_dir_screen = angle
-        return move_angle_to_world(angle)
+        wvx = wvy = 0.0
+        for key, d in ((pygame.K_UP, (0, -1)), (pygame.K_w, (0, -1)),
+                       (pygame.K_DOWN, (0, 1)), (pygame.K_s, (0, 1)),
+                       (pygame.K_LEFT, (-1, 0)), (pygame.K_a, (-1, 0)),
+                       (pygame.K_RIGHT, (1, 0)), (pygame.K_d, (1, 0))):
+            if keys[key]:
+                sx, sy = world_to_screen(d[0], d[1])
+                wx, wy = screen_to_world(sx, sy)
+                wvx += wx
+                wvy += wy
+        hero = self.world.hero
+        hero.set_velocity(wvx, wvy)
 
+        mx, my = pygame.mouse.get_pos()
+        hx, hy = self.camera.world_to_view(hero.x, hero.y)
+        angle = math.atan2(my - (hy - 14 * self.camera.zoom), mx - hx)
+        if keys[pygame.K_SPACE] and not hero.attacking and not self._attack_consumed:
+            hero.start_attack(angle)
+            self._attack_consumed = True
+        if not keys[pygame.K_SPACE]:
+            self._attack_consumed = False
+
+        # Outil (E maintenu) : recolte / minage / loot / bucraft.
+        hero.gathering = bool(keys[pygame.K_e]) and not hero.dead
+        target = self.world.gather_target() if hero.gathering else None
+        hero.gather_target = target
+        if target is None:
+            hero.gather_t = 0.0
+        elif hero.gather_t >= self.world.gather_duration(target):
+            self.world.complete_gather(target)
+            hero.gather_t = 0.0
+
+    # ------------------------------------------------------------------ update
     def update(self, dt):
-        w = self.world
-        if not w.hero.dead:
-            wvx, wvy = self._input_direction()
-            if w.hero.attacking:
-                wvx *= 0.35
-            w.hero.set_velocity(wvx, wvy)
-            w.hero.try_move(dt, self._walkable_with_props)
-        w.update(dt)
-        self.cam.follow((w.hero.x, w.hero.y), dt)
+        if not self.world.hero.dead:
+            self._hero_input()
+            self.world.update(dt)
+        self.camera.follow((self.world.hero.x, self.world.hero.y), dt)
 
-    def _walkable_with_props(self, wx, wy) -> bool:
-        if not self.world.map.is_walkable(wx, wy):
-            return False
-        r = self.world.hero.radius
-        for p in self.world.map.solid_props():
-            if abs(p["x"] - wx) < 0.35 + r and abs(p["y"] - wy) < 0.35 + r:
-                return False
-        return True
-
+    # ------------------------------------------------------------------ render
     def draw(self, surf: pygame.Surface):
-        surf.fill((24, 32, 48))
-        w = self.world
-        vr = self.cam.view_rect()
-        w.map.draw_ground(surf, self.cam, vr)
+        W, H = surf.get_size()
+        surf.fill((38, 60, 92))
+        cam = self.camera
 
-        # Assemble les renderables (props + entities + particules) et trie.
+        vx0, vy0, vx1, vy1 = cam.view_rect()
+        self.world.map.draw_ground(surf, cam, (vx0, vy0, vx1, vy1))
+
+        # tri depth : props, ressources, ennemis, heros
         items = []
-        for p in w.map.props:
+        for p in self.world.map.props:
             items.append((p["x"] + p["y"], "prop", p))
-        for e in w.enemies:
+        for r in self.world.resources:
+            items.append((r.depth, "res", r))
+        for e in self.world.enemies:
             items.append((e.depth, "ent", e))
-        items.append((w.hero.depth + 0.001, "ent", w.hero))
-        items.sort(key=lambda t: t[0])
+        hero = self.world.hero
+        items.append((hero.depth, "ent", hero))
+        items.sort(key=lambda it: it[0])
         for _, kind, obj in items:
             if kind == "prop":
-                px, py = self.cam.world_to_view(obj["x"], obj["y"])
-                if -80 < px < surf.get_width() + 80 and -160 < py < surf.get_height() + 80:
-                    draw_prop(surf, self.cam, obj)
+                draw_prop(surf, cam, obj)
             else:
-                obj.draw(surf, self.cam)
+                obj.draw(surf, cam)
 
-        for pt in w.particles:
-            px, py = self.cam.world_to_view(pt["x"], pt["y"], pt["z"])
-            s = max(1, int(3 * self.cam.zoom * pt["life"]))
-            surf.fill(pt["color"], (int(px) - s, int(py) - s, s * 2, s * 2))
+        # particules
+        for p in self.world.particles:
+            px, py = cam.world_to_view(p["x"], p["y"], p["z"])
+            s = max(1, int(3 * cam.zoom * p["life"] * 2))
+            pygame.draw.rect(surf, p["color"], (px - s // 2, py - s // 2, s, s))
 
-        self._draw_hud(surf)
+        # cible de l'outil : surbrillance + barre de progression
+        if hero.gathering and hero.gather_target:
+            t = hero.gather_target
+            if t[0] == "res":
+                ox, oy = t[1].x, t[1].y
+            elif t[0] == "prop":
+                ox, oy = t[1]["x"], t[1]["y"]
+            else:
+                ox, oy = t[1] + 0.5, t[2] + 0.5
+            px, py = cam.world_to_view(ox, oy)
+            prog = min(1.0, hero.gather_t / max(0.01, self.world.gather_duration(t)))
+            pygame.draw.circle(surf, (255, 255, 160), (int(px), int(py - 6 * cam.zoom)),
+                               int(16 * cam.zoom), 2)
+            bw = int(30 * cam.zoom)
+            pygame.draw.rect(surf, (40, 40, 40), (px - bw // 2, py - 34 * cam.zoom, bw, 5))
+            pygame.draw.rect(surf, (250, 220, 90), (px - bw // 2, py - 34 * cam.zoom, int(bw * prog), 5))
 
-    def _draw_hud(self, surf: pygame.Surface):
-        f = self.game.font
-        # Coeurs façon Zelda.
-        for i in range(self.world.hero.max_hp):
+        # textes flottants "+2 bois"
+        for fl in self.world.floaters:
+            px, py = cam.world_to_view(fl["x"], fl["y"], fl["z"])
+            txt = self.font.render(fl["text"], True, (255, 255, 180))
+            surf.blit(txt, (px - txt.get_width() / 2, py))
+
+        self._draw_hud(surf, (W, H))
+
+    # ------------------------------------------------------------------ HUD
+    def _draw_hud(self, surf, size):
+        W, H = size
+        hero = self.world.hero
+
+        # coeurs
+        for i in range(hero.max_hp):
             x = 14 + i * 22
-            y = 14
-            col = (220, 60, 60) if i < self.world.hero.hp else (60, 40, 40)
-            r = 6
-            pygame.draw.circle(surf, col, (x + r, y + r), r)
-            pygame.draw.circle(surf, col, (x + r * 2, y + r), r)
-            pygame.draw.polygon(surf, col, [(x, y + r), (x + r * 2, y + r * 2.6), (x + r * 4, y + r)])
-        txt = f.render(f"Ennemis vaincus : {self.world.score}", True, (255, 255, 255))
-        surf.blit(txt, (14, 34))
-        if self.world.hero.dead:
-            msg = f.render("GAME OVER - [R] nouvelle carte", True, (255, 80, 80))
-            surf.blit(msg, msg.get_rect(center=(surf.get_width() // 2, surf.get_height() // 2)))
-        if self.show_help:
-            lines = [
-                "ZQSD / WASD / Fleches : deplacer (directions relatives a l'ecran)",
-                "ESPACE : coup d'epee    +/- : zoom    H : aide    R : nouvelle carte    ESC : quitter",
-            ]
-            y = surf.get_height() - 20 - len(lines) * 18
-            for ln in lines:
-                surf.blit(f.render(ln, True, (200, 220, 255)), (14, y))
-                y += 18
+            col = (230, 60, 60) if i < hero.hp else (70, 40, 40)
+            pygame.draw.circle(surf, col, (x + 5, 20), 6)
+            pygame.draw.circle(surf, col, (x + 13, 20), 6)
+            pygame.draw.polygon(surf, col, [(x - 1, 22), (x + 17, 22), (x + 8, 32)])
+
+        # zone actuelle
+        z = self.world.current_zone()
+        label = z.label if z else "Inconnu"
+        txt = self.bigfont.render(f"Zone : {label}", True, (255, 240, 170))
+        surf.blit(txt, (14, 40))
+
+        inv = ", ".join(f"{k}:{v}" for k, v in sorted(self.world.inventory.items()) if v > 0) or "vide"
+        it = self.font.render(f"Inventaire : {inv}", True, (220, 220, 220))
+        surf.blit(it, (14, 68))
+        sc = self.font.render(f"Ennemis vaincus : {self.world.score}   Graine : {self.world.seed}", True, (200, 200, 200))
+        surf.blit(sc, (14, 86))
+
+        self._draw_minimap(surf, W)
+
+        hint = self.font.render(self.hint, True, (180, 230, 180))
+        surf.blit(hint, (14, H - 40))
+        ctrl = self.font.render("ZQSD bouger | ESPACE epee | E outil (farm/mine/loot/bucraft) | C craft | M save ASCII | R nouvelle carte", True, (170, 190, 210))
+        surf.blit(ctrl, (14, H - 22))
+
+        if hero.dead:
+            over = self.bigfont.render("GAME OVER - appuie sur R pour une nouvelle carte", True, (255, 120, 120))
+            surf.blit(over, (W / 2 - over.get_width() / 2, H / 2))
+
+    def _draw_minimap(self, surf, W):
+        m = self.world.map
+        mm = pygame.Surface((m.w, m.h))
+        from engine.ascii_map import TILE_DEFS
+        for y in range(m.h):
+            for x in range(m.w):
+                mm.set_at((x, y), TILE_DEFS[m.grid[y][x]].base)
+        for z in m.zones:
+            pygame.draw.rect(mm, z.color, (z.x, z.y, z.w, z.h), 1)
+        scale = 2
+        big = pygame.transform.scale(mm, (m.w * scale, m.h * scale))
+        rect = big.get_rect(topright=(W - 12, 12))
+        bg = pygame.Rect(rect.left - 4, rect.top - 4, rect.width + 8, rect.height + 8)
+        pygame.draw.rect(surf, (20, 25, 35), bg)
+        surf.blit(big, rect.topleft)
+        hero = self.world.hero
+        pygame.draw.circle(surf, (255, 255, 80),
+                           (rect.left + int(hero.x * scale), rect.top + int(hero.y * scale)), 3)

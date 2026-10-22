@@ -14,8 +14,8 @@ import pygame
 class Scene:
     name = "scene"
 
-    def __init__(self, game: "Game"):
-        self.game = game
+    def __init__(self, game=None, **kwargs):
+        self.game = game if game is not None else kwargs.get("app")
 
     def enter(self):
         pass
